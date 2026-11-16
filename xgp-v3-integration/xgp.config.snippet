@@ -1,0 +1,33 @@
+# ===== mt5700webui 集成到 XGPV3 (lede-xgp-auto-build) =====
+# 追加到 xgp.config 末尾（或合并进对应段落）。
+
+# --- mt5700webui 本体 ---
+CONFIG_PACKAGE_at-webserver=y
+CONFIG_PACKAGE_luci-app-at-webserver=y
+
+# --- QModem at-daemon（共享串口的 ubus 通道）---
+# tom_modem 的 ENABLE_UBUS_DAEMON 依赖会自动拉入 ubus-at-daemon，
+# 这里显式置 y，避免 defconfig 时被注释成 not set 造成歧义。
+CONFIG_PACKAGE_ubus-at-daemon=y
+
+# --- QModem v3.x 选项改名修正 ---
+# QModem 从 v2.8.x 升级到 v3.x 后，这些选项从 luci-app-qmodem 迁移到 qmodem 包，
+# 旧名会 defconfig 静默丢弃。请把旧名改成下面的新名（并删除旧行）：
+#
+#   旧: CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_vendor-qmi-wwan=y
+#   新: CONFIG_PACKAGE_qmodem_INCLUDE_vendor-qmi-wwan=y
+#
+#   旧: CONFIG_PACKAGE_luci-app-qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y
+#   新: CONFIG_PACKAGE_qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y
+#
+#   旧: CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_ADD_PCI_SUPPORT=y
+#   新: CONFIG_PACKAGE_qmodem_INCLUDE_ADD_PCI_SUPPORT=y
+#
+#   旧: CONFIG_PACKAGE_luci-app-qmodem_INCLUDE_ADD_QFIREHOSE_SUPPORT=y
+#   新: CONFIG_PACKAGE_qmodem_INCLUDE_ADD_QFIREHOSE_SUPPORT=y
+CONFIG_PACKAGE_qmodem_INCLUDE_vendor-qmi-wwan=y
+CONFIG_PACKAGE_qmodem_USE_TOM_CUSTOMIZED_QUECTEL_CM=y
+CONFIG_PACKAGE_qmodem_INCLUDE_ADD_PCI_SUPPORT=y
+CONFIG_PACKAGE_qmodem_INCLUDE_ADD_QFIREHOSE_SUPPORT=y
+# 保持旧版 LuCI 前端（XGPV3 菜单 /admin/modem/qmodem 仍指向旧前端）
+# CONFIG_PACKAGE_luci-app-qmodem-next is not set

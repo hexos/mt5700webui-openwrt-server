@@ -149,12 +149,18 @@ XGPV3 原厂方案走的是 `TOM_MODEM`，而不是本仓库新增的 `UBUS` 连
 
 ## 7. XGPV3（西瓜皮V3）集成
 
-XGPV3 的固件**不是**由 `immortalwrt/immortalwrt` 主线直接产出的，而是由
-`zzzz0317/immortalwrt-xgp-auto-build` 构建仓库把主线（openwrt-25.12）、
-QModem feed 和自有配置拼起来编译的。该构建仓库曾集成 mt5700webui，
-但于 2026-07-19 移除。针对 XGPV3 的"适配补全"改动集（可直接套用的补丁、
+XGPV3 的 LEDE 固件由 `zzzz0317/lede-xgp-auto-build` 构建仓库产出：拉取
+`coolsnowwolf/lede` 主线、QModem feed（`FUjr/QModem`）和自有配置拼装编译。
+该构建仓库此前未含 mt5700webui（或已移除），本次重新接入并改为走 at-daemon
+ubus 通道。针对 XGPV3 的"适配补全"改动集（可直接套用的配置/脚本片段、
 操作说明、验证清单）见随附的 `xgp-v3-integration/` 目录。
 
-要点：XGPV3 的 `xgp.config` 已打开适配所需的全部组件
-（`ubus-at-daemon`、`tom_modem_ENABLE_UBUS_DAEMON`、`qmodem`），
-因此只需恢复 mt5700webui 的编译项并把 `-u` 参数修复合入即可。
+要点：
+1. XGPV3 的 `xgp.config` 需打开 `ubus-at-daemon`、`tom_modem_ENABLE_UBUS_DAEMON`、
+   `qmodem`，并恢复 `at-webserver` / `luci-app-at-webserver` 编译项。
+2. QModem 从 v2.8.x 升级到 v3.x 后，`luci-app-qmodem_INCLUDE_*` 等选项迁移到了
+   `qmodem_INCLUDE_*`，旧名会被 `make defconfig` 静默丢弃（含 PCIe MHI 驱动），
+   需一并改名。
+3. mt5700webui 走 `connection_type=UBUS`，串口由 QModem at-daemon 独占，
+   不再与 QModem 抢串口；同时修复 TOM_MODEM 模式的 `-u` 参数。
+

@@ -1,0 +1,23 @@
+# ===== mt5700webui 拉取片段（追加到 lede-xgp-auto-build 的 prepare.sh）=====
+# 说明：把 mt5700webui 的两个子包（at-webserver / luci-app-at-webserver）
+# 放到 package/zz/ 下，使其被 OpenWrt 包系统发现。
+
+MT5700_REPO="https://github.com/hexos/mt5700webui-openwrt-server.git"
+MT5700_BRANCH="main"
+
+# 拉取到临时目录，再按包拷贝进 package/zz/
+rm -rf /tmp/mt5700webui
+git clone --depth 1 -b "${MT5700_BRANCH}" "${MT5700_REPO}" /tmp/mt5700webui \
+    || { echo "mt5700webui git clone failed"; exit 1; }
+
+rm -rf package/zz/at-webserver package/zz/luci-app-at-webserver
+cp -r /tmp/mt5700webui/at-webserver package/zz/at-webserver \
+    || { echo "cp at-webserver failed"; exit 1; }
+cp -r /tmp/mt5700webui/luci-app-at-webserver package/zz/luci-app-at-webserver \
+    || { echo "cp luci-app-at-webserver failed"; exit 1; }
+rm -rf /tmp/mt5700webui
+
+# （可选）用 XGPV3 的 UBUS 默认配置覆盖 at-webserver 默认串口连接
+if [ -f "../files/etc/config/at-webserver" ]; then
+    cp ../files/etc/config/at-webserver package/zz/at-webserver/files/etc/config/at-webserver
+fi
