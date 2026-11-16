@@ -15,7 +15,7 @@ config at-webserver 'config'
 	option serial_method 'TOM_MODEM' 	# 串口通信方式 (TOM_MODEM / DIRECT)，UBUS 模式下不使用
 	option serial_feature 'UBUS'		# TOM Modem 特性 (UBUS / NONE)，UBUS 模式下不使用
 	# UBUS 模式下 serial_port / serial_baudrate / serial_timeout 仍生效：
-	#   serial_port     = at-daemon 的 at_port（如 /dev/ttyUSB2）
+	#   serial_port     = at-daemon 的 at_port（XGPV3 实测为 /dev/ttyUSB1）
 	#   serial_baudrate = open 时的波特率（默认 115200）
 	#   serial_timeout  = sendat 超时（秒）
 	option websocket_port '8765'

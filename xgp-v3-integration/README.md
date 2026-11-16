@@ -45,17 +45,18 @@ ubus call at-daemon list
 logread -f | grep -i ubus
 
 # 手工发一条 AT，验证 ubus 通道
-ubus call at-daemon sendat '{"at_port":"/dev/ttyUSB2","at_cmd":"AT+CSQ"}'
+ubus call at-daemon sendat '{"at_port":"/dev/ttyUSB1","at_cmd":"AT+CSQ"}'
 
 # 打开 http://<路由>/5700/ 的 AT 终端收发
 ```
 
 ## 5. 关于串口（at_port）
 
-XGPV3 的 PCIe 5G 模组走 MHI，其 AT 串口设备名因模组而异（Quectel 常见
-`/dev/ttyUSB2`，MHI 模组可能是其它节点）。**必须让 `serial_port` 与 QModem
-at-daemon 实际打开的 `at_port` 一致**，否则 `sendat` 会超时。可在 LuCI
-`服务 → AT WebServer → 连接类型` 里核对/修改。
+XGPV3 实测 at-daemon 打开的是 `/dev/ttyUSB1`，已写入本目录的默认配置。
+PCIe 5G 模组走 MHI，AT 串口设备名可能因模组或 USB 枚举顺序变化。
+**必须让 `serial_port` 与 QModem at-daemon 实际打开的 `at_port` 一致**，
+否则 `sendat` 会超时。可用 `ubus call at-daemon list` 查当前端口，
+或在 LuCI `服务 → AT WebServer → 连接类型` 里核对/修改。
 
 ## 6. 回退
 

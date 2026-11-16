@@ -90,7 +90,7 @@ ubus call at-daemon list
 config at-webserver 'config'
     option enabled '1'
     option connection_type 'UBUS'
-    option serial_port '/dev/ttyUSB2'      # 与 QModem 的 AT 串口一致
+    option serial_port '/dev/ttyUSB1'      # 与 QModem 的 AT 串口一致
     option serial_baudrate '115200'
     option serial_timeout '10'             # sendat 超时（秒）
     # ... WebSocket / 通知等其它配置保持不变
@@ -107,12 +107,12 @@ config at-webserver 'config'
 
 ```sh
 # 1. 服务端日志应出现
-#    "[UBUS] 已连接 at-daemon 串口: /dev/ttyUSB2 @ 115200 bps"
+#    "[UBUS] 已连接 at-daemon 串口: /dev/ttyUSB1 @ 115200 bps"
 #    "[UBUS] 启动事件监听 (qmodem.at.line / qmodem.at.urc)"
 logread -f | grep -i ubus
 
 # 2. 手动发一条 AT 验证 ubus 通道
-ubus call at-daemon sendat '{"at_port":"/dev/ttyUSB2","at_cmd":"AT+CSQ"}'
+ubus call at-daemon sendat '{"at_port":"/dev/ttyUSB1","at_cmd":"AT+CSQ"}'
 
 # 3. 打开 WebUI（http://<路由>/5700/），AT 终端可正常收发即成功
 ```

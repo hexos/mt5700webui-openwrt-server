@@ -8,9 +8,9 @@ config at-webserver 'config'
 	option network_timeout '10'
 	option network_allow_wan '0'
 	option network_restrict_access '0'
-	# at-daemon 持有的 AT 串口，务必与 QModem 实际打开的 at_port 一致
-	option serial_port '/dev/ttyUSB2'
-	option serial_port_custom '/dev/ttyUSB2'
+	# at-daemon 持有的 AT 串口（XGPV3 实测 /dev/ttyUSB1），务必与 QModem 实际打开的 at_port 一致
+	option serial_port '/dev/ttyUSB1'
+	option serial_port_custom '/dev/ttyUSB1'
 	option serial_baudrate '115200'
 	option serial_timeout '10'
 	option serial_method 'TOM_MODEM'
