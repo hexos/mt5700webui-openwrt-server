@@ -95,6 +95,13 @@ pub struct SerialConfig {
     pub method: String,
     #[serde(rename = "FEATURE")]
     pub feature: String,
+    /// UCI `serial_port=auto` 时置位（仅 UBUS 模式生效）：
+    /// 启动时与重连时向 at-daemon 询问实际持有的 at_port。
+    #[serde(rename = "AUTO_DETECT", default)]
+    pub auto_detect: bool,
+    /// 自动识别失败时的兜底端口（UCI `serial_port_custom`）。
+    #[serde(rename = "FALLBACK_PORT", default)]
+    pub fallback_port: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -254,21 +261,25 @@ pub fn load_config_from_uci() -> Result<Config, Box<dyn Error>> {
         config.at_config.network.timeout = timeout;
         crate::log_info!("配置加载: 网络连接 {}:{} (超时: {}秒)", host, port, timeout);
     } else {
-        // 读取串口配置
-        let mut port = uci_data
+        // 读取串口配置。
+        // UBUS 模式下 `serial_port=auto` 表示由 at-daemon 自动识别实际 AT 串口，
+        // 此时 `serial_port_custom` 退化为「识别失败时的兜底端口」。
+        let raw_port = uci_data
             .get("serial_port")
             .map(|s| s.as_str())
             .unwrap_or("/dev/ttyUSB0")
             .to_string();
-
-        // 如果选择了自定义路径，读取自定义值
-        if port == "custom" {
-            port = uci_data
+        let auto = conn_type == "UBUS" && crate::ubus::is_auto_port(&raw_port);
+        let port = if raw_port == "custom" || auto {
+            uci_data
                 .get("serial_port_custom")
                 .map(|s| s.as_str())
+                .filter(|s| !s.trim().is_empty())
                 .unwrap_or("/dev/ttyUSB0")
-                .to_string();
-        }
+                .to_string()
+        } else {
+            raw_port.clone()
+        };
 
         let baudrate = uci_data
             .get("serial_baudrate")
@@ -282,6 +293,8 @@ pub fn load_config_from_uci() -> Result<Config, Box<dyn Error>> {
         config.at_config.serial.port = port.clone();
         config.at_config.serial.baudrate = baudrate;
         config.at_config.serial.timeout = timeout;
+        config.at_config.serial.auto_detect = auto;
+        config.at_config.serial.fallback_port = port.clone();
 
         // 读取串口方法和功能
         let method = uci_data
@@ -300,6 +313,9 @@ pub fn load_config_from_uci() -> Result<Config, Box<dyn Error>> {
             "配置加载: 串口连接 {} @ {} bps (超时: {}秒)",
             port, baudrate, timeout
         );
+        if auto {
+            crate::log_info!("配置加载: UBUS 自动识别 AT 端口已启用（兜底 {}）", port);
+        }
         crate::log_info!("配置加载: 串口方法 = {}, 功能 = {}", method, feature);
     }
 

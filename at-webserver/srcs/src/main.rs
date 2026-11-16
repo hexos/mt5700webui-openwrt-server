@@ -46,7 +46,7 @@ pub fn is_urc_line(line: &str) -> bool {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 从UCI加载配置
-    let config = match load_config_from_uci() {
+    let mut config = match load_config_from_uci() {
         Ok(config) => config,
         Err(e) => {
             crate::log_error!("从UCI加载配置失败: {}, 使用默认配置", e);
@@ -54,15 +54,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let config = Arc::new(config);
-    logger::init(
-        config.logging.enabled,
-        &config.logging.level,
-    );
+    logger::init(config.logging.enabled, &config.logging.level);
     notify::init(&config.notification_config.log_file);
+
+    // UBUS 模式下 UCI 写成 serial_port=auto 时，先向 at-daemon 询问它实际
+    // 持有的 AT 串口，再构造 ATClient 与事件监听，保证两处用同一个 at_port。
+    if config.at_config.conn_type == "UBUS" && config.at_config.serial.auto_detect {
+        let fallback = if config.at_config.serial.fallback_port.is_empty() {
+            config.at_config.serial.port.clone()
+        } else {
+            config.at_config.serial.fallback_port.clone()
+        };
+        let (port, source) = crate::ubus::discover_at_port(&fallback, 10).await;
+        crate::log_info!(
+            "[UBUS] 自动识别 AT 端口: {} (来源: {}, 兜底: {})",
+            port, source, fallback
+        );
+        config.at_config.serial.port = port;
+    }
 
     // 打印配置信息
     print_config_summary(&config);
+
+    let config = Arc::new(config);
 
     // 创建AT客户端
     // let at_client = Arc::new(ATClient::new(config.clone())?);
@@ -103,9 +117,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if ubus_mode {
         let owner = "at-webserver".to_string();
         let at_port = config.at_config.serial.port.clone();
+        let auto_detect = config.at_config.serial.auto_detect;
         let urc_tx = at_client.urc_tx.clone();
         tokio::spawn(async move {
-            crate::ubus::monitor_events(urc_tx, owner, at_port).await;
+            crate::ubus::monitor_events(urc_tx, owner, at_port, auto_detect).await;
         });
     }
 
@@ -257,6 +272,14 @@ fn print_config_summary(config: &Config) {
     } else if config.at_config.conn_type == "UBUS" {
         crate::log_info!("  ubus 对象: {}", crate::ubus::AT_DAEMON_OBJECT);
         crate::log_info!("  串口设备: {}", config.at_config.serial.port);
+        crate::log_info!(
+            "  端口识别: {}",
+            if config.at_config.serial.auto_detect {
+                "自动 (at-daemon list + /dev 扫描)"
+            } else {
+                "固定 (UCI serial_port)"
+            }
+        );
         crate::log_info!("  波特率: {}", config.at_config.serial.baudrate);
         crate::log_info!("  AT 超时: {}秒", config.at_config.serial.timeout);
         crate::log_info!("  订阅事件: {} / {}", crate::ubus::EVENT_LINE, crate::ubus::EVENT_URC);

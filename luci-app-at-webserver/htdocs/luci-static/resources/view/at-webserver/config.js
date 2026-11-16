@@ -125,7 +125,7 @@ return view.extend({
 
 		// 串口连接配置（SERIAL 直连 与 UBUS 共享串口 复用同一 at_port）
 		o = s.option(form.ListValue, 'serial_port', _('串口设备'),
-			_('选择串口设备或手动输入路径。UBUS 模式下为 at-daemon 持有的 AT 串口。'));
+			_('选择串口设备或手动输入路径。UBUS 模式可选「自动检测」，由 at-daemon 的端口列表决定实际 AT 串口。'));
 		o.depends('connection_type', ['SERIAL', 'UBUS']);
 
 		// 动态添加系统中可用的串口设备
@@ -140,6 +140,8 @@ return view.extend({
 				// 清空现有选项
 				this.keylist = [];
 				this.vallist = [];
+
+				this.value('auto', _('自动检测（UBUS 模式推荐）'));
 
 				// 添加常见串口设备
 				var serialDevices = [];
@@ -168,7 +170,7 @@ return view.extend({
 				this.value('custom', _('自定义路径...'));
 
 				// 如果当前值不在列表中，添加它
-				if (currentValue && !serialDevices.includes(currentValue) && currentValue !== 'custom') {
+				if (currentValue && !serialDevices.includes(currentValue) && currentValue !== 'custom' && currentValue !== 'auto') {
 					this.value(currentValue, currentValue + ' (当前)');
 				}
 
@@ -178,9 +180,9 @@ return view.extend({
 		o.default = '/dev/ttyUSB0';
 
 		// 自定义串口路径输入框
-		o = s.option(form.Value, 'serial_port_custom', _('自定义串口路径'),
-			_('输入完整的串口设备路径'));
-		o.depends('serial_port', 'custom');
+		o = s.option(form.Value, 'serial_port_custom', _('自定义 / 兜底串口路径'),
+			_('输入完整的串口设备路径。选择「自动检测」时，此值作为识别失败时的兜底端口。'));
+		o.depends('serial_port', ['custom', 'auto']);
 		o.placeholder = '/dev/ttyUSB0';
 		o.rmempty = false;
 

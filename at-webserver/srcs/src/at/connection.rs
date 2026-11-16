@@ -322,14 +322,32 @@ impl ATConnection for TomModemATConn {
 /// （QModem 初始化期间独占串口）时短暂等待重试。
 pub struct UbusATConn {
     pub config: Arc<Config>,
+    /// 当前实际使用的 at_port；自动识别模式下随 at-daemon 状态更新。
+    at_port: String,
+    /// 自动识别失败时的兜底端口。
+    fallback_port: String,
+    auto_detect: bool,
     is_connected: bool,
     response: Option<String>,
 }
 
 impl UbusATConn {
     pub fn new(config: Arc<Config>) -> Self {
+        let (at_port, fallback_port, auto_detect) = {
+            let serial = &config.at_config.serial;
+            let current = serial.port.clone();
+            let fallback = if serial.fallback_port.is_empty() {
+                current.clone()
+            } else {
+                serial.fallback_port.clone()
+            };
+            (current, fallback, serial.auto_detect)
+        };
         Self {
             config,
+            at_port,
+            fallback_port,
+            auto_detect,
             is_connected: false,
             response: None,
         }
@@ -349,10 +367,22 @@ impl UbusATConn {
 #[async_trait]
 impl ATConnection for UbusATConn {
     async fn connect(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let serial = &self.config.at_config.serial;
+        // 重连时重新识别：模组重插 / USB 重枚举后 /dev/ttyUSBx 可能变化。
+        if self.auto_detect {
+            let preferred = self.at_port.clone();
+            let fallback = self.fallback_port.clone();
+            if let Some(p) = crate::ubus::rediscover_at_port(&preferred, &fallback).await {
+                if p != self.at_port {
+                    crate::log_info!("[UBUS] AT 端口自动切换: {} -> {}", self.at_port, p);
+                    self.at_port = p;
+                }
+            }
+        }
+
+        let baudrate = self.config.at_config.serial.baudrate;
         let params = serde_json::json!({
-            "at_port": serial.port,
-            "baudrate": serial.baudrate,
+            "at_port": self.at_port,
+            "baudrate": baudrate,
             "databits": 8,
             "parity": 0,
             "stopbits": 1,
@@ -363,8 +393,8 @@ impl ATConnection for UbusATConn {
             self.is_connected = true;
             crate::log_info!(
                 "[UBUS] 已连接 at-daemon 串口: {} @ {} bps",
-                serial.port,
-                serial.baudrate
+                self.at_port,
+                baudrate
             );
             Ok(())
         } else {
@@ -390,9 +420,8 @@ impl ATConnection for UbusATConn {
             return Ok(data.len());
         }
 
-        let serial = &self.config.at_config.serial;
         let params = serde_json::json!({
-            "at_port": serial.port,
+            "at_port": self.at_port,
             "at_cmd": command,
             "timeout": self.send_timeout(),
             "owner": self.owner(),

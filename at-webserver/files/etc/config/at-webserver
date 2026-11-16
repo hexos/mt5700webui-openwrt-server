@@ -9,13 +9,14 @@ config at-webserver 'config'
 	option network_allow_wan '0'          # 是否允许外网访问模块 (0=禁止, 1=允许)
 	option network_restrict_access '0'    # 限制只有路由器本身可访问模块 (0=允许局域网, 1=仅路由器)
 	option serial_port '/dev/ttyUSB0'
-	option serial_port_custom '/dev/ttyUSB0'  # 自定义串口路径（当 serial_port='custom' 时使用）
+	option serial_port_custom '/dev/ttyUSB0'  # 自定义路径；serial_port='auto' 时作为自动识别兜底
 	option serial_baudrate '115200'
 	option serial_timeout '10'
 	option serial_method 'TOM_MODEM' 	# 串口通信方式 (TOM_MODEM / DIRECT)，UBUS 模式下不使用
 	option serial_feature 'UBUS'		# TOM Modem 特性 (UBUS / NONE)，UBUS 模式下不使用
 	# UBUS 模式下 serial_port / serial_baudrate / serial_timeout 仍生效：
-	#   serial_port     = at-daemon 的 at_port（XGPV3 实测为 /dev/ttyUSB1）
+	#   serial_port     = 'auto' 自动识别 at-daemon 的 at_port；也可写死路径
+	#                     （XGPV3 实测为 /dev/ttyUSB1）
 	#   serial_baudrate = open 时的波特率（默认 115200）
 	#   serial_timeout  = sendat 超时（秒）
 	option websocket_port '8765'

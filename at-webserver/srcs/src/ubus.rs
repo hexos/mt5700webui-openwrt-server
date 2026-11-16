@@ -73,6 +73,153 @@ pub async fn ubus_call(method: &str, params: &Value, timeout_secs: u64) -> Resul
         .map_err(|e| format!("解析 ubus {} 响应失败: {}（原始: {}）", method, e, text))
 }
 
+// ========== AT 串口自动识别 ==========
+//
+// XGPV3 上模组的 AT 串口不是固定的：换模组、改 USB 配置、MHI/USB 枚举顺序
+// 变化都会让 /dev/ttyUSBx 漂移。QModem 的 at-daemon 才是「谁真正持有 AT 口」
+// 的唯一权威来源，所以自动识别以 `ubus call at-daemon list` 为准，不主动往
+// 串口发探测命令（避免与 QModem 抢租约）。
+
+/// UCI `serial_port` 写成这些值时启用自动识别（大小写不敏感）。
+pub fn is_auto_port(value: &str) -> bool {
+    let v = value.trim();
+    v.is_empty() || v.eq_ignore_ascii_case("auto") || v.eq_ignore_ascii_case("detect")
+}
+
+/// at-daemon 的 `is_open` 可能以数字、布尔或字符串形式出现。
+fn port_is_open(v: Option<&Value>) -> bool {
+    match v {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::Number(n)) => n.as_u64().unwrap_or(0) > 0,
+        Some(Value::String(s)) => s == "1" || s.eq_ignore_ascii_case("true"),
+        _ => false,
+    }
+}
+
+/// 从 `ubus call at-daemon list` 的回复里挑出最可信的 AT 端口。
+///
+/// 回复形如 `{"ports":[{"port":"/dev/ttyUSB1","is_open":1,...},
+/// {"port":"/dev/ttyUSB2","file_status":"exists",...}]}`。
+/// `is_open=1` 表示该端口已被 at-daemon（即 QModem）打开，优先级最高；
+/// 其次是设备节点确实存在的端口。多个候选时优先保留 `preferred`，
+/// 避免端口重枚举时无谓漂移。
+pub fn pick_at_port(reply: &Value, preferred: &str) -> Option<String> {
+    let ports = reply.get("ports")?.as_array()?;
+    let mut opened: Vec<String> = Vec::new();
+    let mut existing: Vec<String> = Vec::new();
+
+    for entry in ports {
+        let port = match entry.get("port").and_then(|v| v.as_str()) {
+            Some(p) if p.starts_with("/dev/") => p.to_string(),
+            _ => continue,
+        };
+        let open = port_is_open(entry.get("is_open"));
+        if open {
+            opened.push(port.clone());
+        }
+        if open || entry.get("file_status").and_then(|v| v.as_str()) == Some("exists") {
+            existing.push(port);
+        }
+    }
+
+    for candidates in [&opened, &existing] {
+        if candidates.is_empty() {
+            continue;
+        }
+        if !preferred.is_empty() && candidates.iter().any(|p| p.as_str() == preferred) {
+            return Some(preferred.to_string());
+        }
+        return candidates.first().cloned();
+    }
+    None
+}
+
+fn is_numbered(name: &str, prefix: &str) -> bool {
+    match name.strip_prefix(prefix) {
+        Some(suffix) => !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// 扫描 `/dev` 下常见 AT 串口节点，作为 at-daemon 尚未就绪时的补充。
+/// 只枚举节点、不打开端口；ttyS*（板载调试串口）排在最后。
+fn scan_serial_devices() -> Vec<String> {
+    let entries = match std::fs::read_dir("/dev") {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut found: Vec<(u8, String)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let tier = if is_numbered(&name, "ttyUSB") {
+            0
+        } else if is_numbered(&name, "ttyACM") {
+            1
+        } else if name.starts_with("wwan") && name.contains("at") {
+            2
+        } else if name.starts_with("mhi_") {
+            3
+        } else if is_numbered(&name, "ttyS") {
+            4
+        } else {
+            continue;
+        };
+        found.push((tier, format!("/dev/{}", name)));
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    found.into_iter().map(|(_, p)| p).collect()
+}
+
+/// 单次读取 at-daemon 当前持有的端口（不等待、不扫描设备节点）。
+pub async fn current_at_port(preferred: &str) -> Option<String> {
+    let reply = ubus_call("list", &json!({}), 5).await.ok()?;
+    pick_at_port(&reply, preferred)
+}
+
+/// 重连时重新识别：at-daemon 没报告端口时退回 `/dev` 节点扫描。
+pub async fn rediscover_at_port(preferred: &str, fallback: &str) -> Option<String> {
+    if let Some(p) = current_at_port(preferred).await {
+        return Some(p);
+    }
+    let devices = scan_serial_devices();
+    devices
+        .iter()
+        .find(|p| p.as_str() == fallback)
+        .cloned()
+        .or_else(|| devices.first().cloned())
+}
+
+/// 启动时自动识别 AT 端口。
+///
+/// atserver 往往比 QModem / at-daemon 先起来，因此最多等待 `attempts` 轮
+/// （每轮间隔 3 秒）直到 `list` 里出现端口。等不到则扫描 `/dev` 节点，
+/// 最后才用 UCI 的 `serial_port_custom` 兜底，保证服务始终能起来。
+pub async fn discover_at_port(fallback: &str, attempts: u32) -> (String, &'static str) {
+    let total = attempts.max(1);
+    for attempt in 0..total {
+        if let Some(p) = current_at_port(fallback).await {
+            return (p, "at-daemon list");
+        }
+        if attempt + 1 < total {
+            crate::log_info!(
+                "[UBUS] 尚未发现 at-daemon 持有的 AT 端口，3 秒后重试 ({}/{})",
+                attempt + 1,
+                total
+            );
+            sleep(Duration::from_secs(3)).await;
+        }
+    }
+
+    let devices = scan_serial_devices();
+    if let Some(p) = devices.iter().find(|p| p.as_str() == fallback) {
+        return (p.clone(), "/dev 节点（兜底值）");
+    }
+    if let Some(p) = devices.first() {
+        return (p.clone(), "/dev 节点扫描");
+    }
+    (fallback.to_string(), "配置兜底")
+}
+
 /// best-effort 注册我们关心的 URC 前缀。
 ///
 /// at-daemon 以 (owner, urc_id) 为唯一键；这里用独立 owner，
@@ -168,10 +315,27 @@ fn event_payload(line: &str, event_name: &str) -> Option<Value> {
 
 /// 长驻事件监听：订阅 at-daemon 的 line / urc 事件，翻译为 urc_tx 广播。
 /// 断线自动重连（ubusd 或 at-daemon 重启后事件流会中断）。
-pub async fn monitor_events(urc_tx: broadcast::Sender<String>, owner: String, at_port: String) {
+pub async fn monitor_events(
+    urc_tx: broadcast::Sender<String>,
+    owner: String,
+    at_port: String,
+    auto_detect: bool,
+) {
+    let mut at_port = at_port;
     let mut seen: VecDeque<(u64, u64)> = VecDeque::new();
 
     loop {
+        // 每次（重）连接时重新识别端口：URC 前缀注册是按 at_port 绑定的，
+        // 模组重插后必须跟着换，否则 qmodem.at.urc 事件不会送到这里。
+        if auto_detect {
+            if let Some(p) = rediscover_at_port(&at_port, &at_port).await {
+                if p != at_port {
+                    crate::log_info!("[UBUS] 事件监听 AT 端口更新: {} -> {}", at_port, p);
+                    at_port = p;
+                }
+            }
+        }
+
         crate::log_info!("[UBUS] 启动事件监听 ({} / {})", EVENT_LINE, EVENT_URC);
 
         // 每次连接（重连）后重新注册，因为 at-daemon 可能已重启。
@@ -252,5 +416,61 @@ mod tests {
     fn ignores_unrelated_event() {
         let line = r#"{"some.other.event":{"x":1}}"#;
         assert!(event_payload(line, EVENT_LINE).is_none());
+    }
+
+    #[test]
+    fn auto_port_values() {
+        assert!(is_auto_port("auto"));
+        assert!(is_auto_port("AUTO"));
+        assert!(is_auto_port("detect"));
+        assert!(is_auto_port("  "));
+        assert!(!is_auto_port("/dev/ttyUSB1"));
+        assert!(!is_auto_port("custom"));
+    }
+
+    #[test]
+    fn picks_open_port_from_daemon_list() {
+        let reply: Value = serde_json::from_str(
+            r#"{"ports":[
+                {"port":"/dev/ttyUSB2","is_open":0,"file_status":"missing"},
+                {"port":"/dev/ttyUSB1","is_open":1,"fd":7}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(pick_at_port(&reply, "").as_deref(), Some("/dev/ttyUSB1"));
+    }
+
+    #[test]
+    fn prefers_configured_port_when_open() {
+        let reply: Value = serde_json::from_str(
+            r#"{"ports":[
+                {"port":"/dev/ttyUSB1","is_open":1},
+                {"port":"/dev/ttyUSB2","is_open":1}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            pick_at_port(&reply, "/dev/ttyUSB2").as_deref(),
+            Some("/dev/ttyUSB2")
+        );
+    }
+
+    #[test]
+    fn falls_back_to_existing_node() {
+        let reply: Value = serde_json::from_str(
+            r#"{"ports":[{"port":"/dev/ttyUSB3","is_open":0,"file_status":"exists"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(pick_at_port(&reply, "").as_deref(), Some("/dev/ttyUSB3"));
+    }
+
+    #[test]
+    fn skips_missing_ports() {
+        let reply: Value = serde_json::from_str(
+            r#"{"ports":[{"port":"/dev/ttyUSB9","is_open":0,"file_status":"missing"}]}"#,
+        )
+        .unwrap();
+        assert!(pick_at_port(&reply, "").is_none());
+        assert!(pick_at_port(&json!({"ports": []}), "").is_none());
     }
 }

@@ -50,13 +50,14 @@ Web 前端 (www/5700)  ──WebSocket──>  atserver (Rust)
 
 | 文件 | 改动 |
 |------|------|
-| `at-webserver/srcs/src/ubus.rs`（新增） | ubus CLI 调用封装、事件监听、URC 分发与去重 |
-| `at-webserver/srcs/src/at/connection.rs` | 新增 `UbusATConn`（实现 `ATConnection`） |
+| `at-webserver/srcs/src/ubus.rs`（新增） | ubus CLI 调用封装、事件监听、URC 分发与去重；`at_port` 自动识别 |
+| `at-webserver/srcs/src/at/connection.rs` | 新增 `UbusATConn`（实现 `ATConnection`）；重连时刷新 at_port |
 | `at-webserver/srcs/src/at/client.rs` | `ATClient::new()` 增加 `UBUS` 分支；补 `#[derive(Clone)]` |
-| `at-webserver/srcs/src/main.rs` | 注册 `ubus` 模块；UBUS 模式改用事件总线取 URC；配置摘要 |
+| `at-webserver/srcs/src/config.rs` | `serial_port=auto` 解析，`auto_detect` / `fallback_port` 字段 |
+| `at-webserver/srcs/src/main.rs` | 注册 `ubus` 模块；启动自动识别；UBUS 模式改用事件总线取 URC；配置摘要 |
 | `at-webserver/Makefile` | 增加 `+ubus` 依赖；版本 1.1.0 |
-| `at-webserver/files/etc/config/at-webserver` | 说明 UBUS 模式复用的串口参数 |
-| `luci-app-at-webserver/.../view/at-webserver/config.js` | 连接类型增加 `UBUS` 选项 |
+| `at-webserver/files/etc/config/at-webserver` | 说明 UBUS 模式复用的串口参数与 auto 用法 |
+| `luci-app-at-webserver/.../view/at-webserver/config.js` | 连接类型增加 `UBUS`；串口下拉增加「自动检测」 |
 
 ## 4. 部署步骤
 
@@ -90,28 +91,51 @@ ubus call at-daemon list
 config at-webserver 'config'
     option enabled '1'
     option connection_type 'UBUS'
-    option serial_port '/dev/ttyUSB1'      # 与 QModem 的 AT 串口一致
+    option serial_port 'auto'                # 自动识别 at-daemon 持有的 AT 串口
+    option serial_port_custom '/dev/ttyUSB1' # 识别失败时的兜底（XGPV3 实测值）
     option serial_baudrate '115200'
-    option serial_timeout '10'             # sendat 超时（秒）
+    option serial_timeout '10'               # sendat 超时（秒）
     # ... WebSocket / 通知等其它配置保持不变
 ```
 
 或在 LuCI：`服务 → AT WebServer → 连接类型` 选择 **QModem UBUS (at-daemon)**，
-并确认串口设备与 QModem 一致。
+串口设备选 **自动检测（UBUS 模式推荐）**。需要固定端口时，把 `serial_port`
+直接写成 `/dev/ttyUSBx` 即关闭自动识别。
 
 ```sh
 /etc/init.d/at-webserver restart
 ```
 
+#### 4.3.1 AT 串口自动识别怎么工作
+
+`serial_port='auto'`（或 `detect`）仅在 UBUS 模式生效，解决 `/dev/ttyUSBx`
+因模组更换、USB/MHI 枚举顺序变化而漂移的问题：
+
+1. 启动时调用 `ubus call at-daemon list`，取 `ports[]` 中 `is_open=1` 的端口
+   —— 这是 QModem 实际打开并持有的 AT 串口，最可信；其次是
+   `file_status="exists"` 的端口。多个候选时优先保留兜底值，避免无谓漂移。
+2. atserver 通常比 QModem 先起来，所以最多等 10 轮、每轮 3 秒（约 30 秒）。
+3. 等不到 at-daemon 时扫描 `/dev` 下的 `ttyUSB*` / `ttyACM*` / `wwan*at*` /
+   `mhi_*` / `ttyS*` 节点（按此优先级）。**只枚举节点、不主动发 AT 命令**，
+   避免与 QModem 抢租约。
+4. 仍无结果则使用 `serial_port_custom` 兜底，服务照常启动。
+5. 之后每次断线重连都会重新识别；事件监听任务重连时也会按新端口重新注册
+   URC 前缀，因此模组重插后无需重启服务、无需改配置。
+
+日志会打印识别来源，便于定位：
+`[UBUS] 自动识别 AT 端口: /dev/ttyUSB1 (来源: at-daemon list, 兜底: /dev/ttyUSB1)`。
+
 ### 4.4 验证
 
 ```sh
 # 1. 服务端日志应出现
+#    "[UBUS] 自动识别 AT 端口: /dev/ttyUSB1 (来源: at-daemon list, 兜底: ...)"
 #    "[UBUS] 已连接 at-daemon 串口: /dev/ttyUSB1 @ 115200 bps"
 #    "[UBUS] 启动事件监听 (qmodem.at.line / qmodem.at.urc)"
 logread -f | grep -i ubus
 
-# 2. 手动发一条 AT 验证 ubus 通道
+# 2. 先看 at-daemon 实际持有的端口，再手动发一条 AT 验证 ubus 通道
+ubus call at-daemon list
 ubus call at-daemon sendat '{"at_port":"/dev/ttyUSB1","at_cmd":"AT+CSQ"}'
 
 # 3. 打开 WebUI（http://<路由>/5700/），AT 终端可正常收发即成功
@@ -120,7 +144,8 @@ ubus call at-daemon sendat '{"at_port":"/dev/ttyUSB1","at_cmd":"AT+CSQ"}'
 ## 5. 注意事项
 
 - **串口唯一**：UBUS 模式下 atserver 不再自己 open 串口，务必保证 at-daemon 已 open
-  同一 `at_port`；两个 at_port 不一致会导致命令超时。
+  同一 `at_port`；两个 at_port 不一致会导致命令超时。默认 `serial_port='auto'`
+  会自动对齐，只有写死端口时才需要手工核对。
 - **初始化窗口**：QModem 若持有租约（ttl 默认 300s）初始化模组，此期间 atserver 的
   命令会短暂返回 `settings_pending` 并自动重试；初始化完成后恢复。
 - **防火墙 / WebSocket**：UBUS 只改变 AT 命令的获取方式，WebSocket 端口、认证、

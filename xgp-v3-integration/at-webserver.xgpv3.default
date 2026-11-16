@@ -8,8 +8,10 @@ config at-webserver 'config'
 	option network_timeout '10'
 	option network_allow_wan '0'
 	option network_restrict_access '0'
-	# at-daemon 持有的 AT 串口（XGPV3 实测 /dev/ttyUSB1），务必与 QModem 实际打开的 at_port 一致
-	option serial_port '/dev/ttyUSB1'
+	# AT 串口自动识别：atserver 启动时向 at-daemon list 询问 QModem 实际持有的端口；
+	# at-daemon 尚未就绪则扫描 /dev 节点，最后回退到 serial_port_custom（XGPV3 实测值）。
+	# 如需固定端口，把 serial_port 改成 /dev/ttyUSBx 即可关闭自动识别。
+	option serial_port 'auto'
 	option serial_port_custom '/dev/ttyUSB1'
 	option serial_baudrate '115200'
 	option serial_timeout '10'
