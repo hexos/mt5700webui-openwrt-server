@@ -1,6 +1,7 @@
 
 config at-webserver 'config'
 	option enabled '1'
+	# 连接方式: NETWORK(直连模组网络AT) / SERIAL(直连串口) / UBUS(QModem at-daemon 共享串口)
 	option connection_type 'NETWORK'
 	option network_host '192.168.8.1'
 	option network_port '20249'
@@ -11,8 +12,12 @@ config at-webserver 'config'
 	option serial_port_custom '/dev/ttyUSB0'  # 自定义串口路径（当 serial_port='custom' 时使用）
 	option serial_baudrate '115200'
 	option serial_timeout '10'
-	option serial_method 'TOM_MODEM' 	# 串口通信方式 (TOM_MODEM / DIRECT)
-	option serial_feature 'UBUS'		#TOM Modem 特性 
+	option serial_method 'TOM_MODEM' 	# 串口通信方式 (TOM_MODEM / DIRECT)，UBUS 模式下不使用
+	option serial_feature 'UBUS'		# TOM Modem 特性 (UBUS / NONE)，UBUS 模式下不使用
+	# UBUS 模式下 serial_port / serial_baudrate / serial_timeout 仍生效：
+	#   serial_port     = at-daemon 的 at_port（如 /dev/ttyUSB2）
+	#   serial_baudrate = open 时的波特率（默认 115200）
+	#   serial_timeout  = sendat 超时（秒）
 	option websocket_port '8765'
 	option websocket_allow_wan '0'          # 是否允许外网访问 WebSocket (0=禁止, 1=允许)
 	option websocket_auth_key ''            # WebSocket 连接密钥（留空则不验证）

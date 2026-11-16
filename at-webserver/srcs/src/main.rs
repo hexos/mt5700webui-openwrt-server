@@ -10,13 +10,14 @@ mod websocket;
 mod net_utils;
 mod netmon;
 mod notify;
+mod ubus;
 
 use config::{load_config_from_uci, Config, DEFAULT_CONFIG_JSON};
 use at::ATClient;
 use airplane::AutoAirPlaneMode;
 use net_utils::{create_dual_stack_listener, create_ipv4_listener};
 
-fn is_urc_line(line: &str) -> bool {
+pub fn is_urc_line(line: &str) -> bool {
     let trimmed = line.trim();
     if trimmed.is_empty() {
         return false;
@@ -96,7 +97,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // URC 捕获任务
+    // UBUS 模式下 URC 由 at-daemon 的 ubus 事件总线推送，不走串口轮询。
+    // 这里单独启动事件监听任务（含断线重连）；其它模式仍用下面的 receive 轮询。
+    let ubus_mode = config.at_config.conn_type == "UBUS";
+    if ubus_mode {
+        let owner = "at-webserver".to_string();
+        let at_port = config.at_config.serial.port.clone();
+        let urc_tx = at_client.urc_tx.clone();
+        tokio::spawn(async move {
+            crate::ubus::monitor_events(urc_tx, owner, at_port).await;
+        });
+    }
+
+    // URC 捕获任务（非 UBUS 模式）+ 连接维护任务（所有模式）
+    // 该循环同时承担：启动/掉线后的 connect 重连、以及流式连接的 URC 轮询。
     let c_monitor = at_client.clone();
     tokio::spawn(async move {
         let mut last_reconnect_attempt = std::time::Instant::now();
@@ -120,7 +134,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             tokio::spawn(async move { c_init.init_module().await });
                         }
                     }
-                } else {
+                } else if !ubus_mode {
+                    // UBUS 模式下 sendat 是请求-响应，receive() 只返回命令应答，
+                    // 不会有主动上报，URC 已由事件监听任务接管，跳过轮询。
                     match conn.receive().await {
                         Ok(data) => {
                             if !data.is_empty() {
@@ -238,6 +254,13 @@ fn print_config_summary(config: &Config) {
             config.at_config.network.host, config.at_config.network.port
         );
         crate::log_info!("  网络超时: {}秒", config.at_config.network.timeout);
+    } else if config.at_config.conn_type == "UBUS" {
+        crate::log_info!("  ubus 对象: {}", crate::ubus::AT_DAEMON_OBJECT);
+        crate::log_info!("  串口设备: {}", config.at_config.serial.port);
+        crate::log_info!("  波特率: {}", config.at_config.serial.baudrate);
+        crate::log_info!("  AT 超时: {}秒", config.at_config.serial.timeout);
+        crate::log_info!("  订阅事件: {} / {}", crate::ubus::EVENT_LINE, crate::ubus::EVENT_URC);
+        crate::log_info!("  提示: 需在 QModem 侧启用 use_ubus=1 以共享串口");
     } else {
         crate::log_info!("  串口设备: {}", config.at_config.serial.port);
         crate::log_info!("  波特率: {}", config.at_config.serial.baudrate);

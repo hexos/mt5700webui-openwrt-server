@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=at-webserver
-PKG_VERSION:=1.0.6
+PKG_VERSION:=1.1.0
 PKG_RELEASE:=1
 
 PKG_BUILD_DEPENDS:=rust/host
@@ -15,7 +15,7 @@ define Package/at-webserver
   CATEGORY:=Network
   TITLE:=AT Command WebSocket Server Rust Implementation
   URL:=https://github.com/kcro227/mt5700webui-openwrt-server
-  DEPENDS:=$(RUST_ARCH_DEPENDS)
+  DEPENDS:=$(RUST_ARCH_DEPENDS) +ubus
 endef
 
 define Package/at-webserver/description

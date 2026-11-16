@@ -83,6 +83,7 @@ return view.extend({
 			_('选择AT命令的连接方式'));
 		o.value('NETWORK', _('网络连接'));
 		o.value('SERIAL', _('串口连接'));
+		o.value('UBUS', _('QModem UBUS (at-daemon)'));
 		o.default = 'NETWORK';
 		o.rmempty = false;
 
@@ -122,10 +123,10 @@ return view.extend({
 		o.default = '0';
 		o.rmempty = false;
 
-		// 串口连接配置
+		// 串口连接配置（SERIAL 直连 与 UBUS 共享串口 复用同一 at_port）
 		o = s.option(form.ListValue, 'serial_port', _('串口设备'),
-			_('选择串口设备或手动输入路径'));
-		o.depends('connection_type', 'SERIAL');
+			_('选择串口设备或手动输入路径。UBUS 模式下为 at-daemon 持有的 AT 串口。'));
+		o.depends('connection_type', ['SERIAL', 'UBUS']);
 
 		// 动态添加系统中可用的串口设备
 		o.load = function (section_id) {
@@ -194,13 +195,13 @@ return view.extend({
 		o.value('460800', '460800');
 		o.value('921600', '921600');
 		o.default = '115200';
-		o.depends('connection_type', 'SERIAL');
+		o.depends('connection_type', ['SERIAL', 'UBUS']);
 
 		o = s.option(form.Value, 'serial_timeout', _('串口超时'),
-			_('串口通信超时时间（秒）'));
+			_('串口通信超时时间（秒）。UBUS 模式下作为 sendat 超时。'));
 		o.datatype = 'uinteger';
 		o.default = '10';
-		o.depends('connection_type', 'SERIAL');
+		o.depends('connection_type', ['SERIAL', 'UBUS']);
 		// 串口连接方法
 		o = s.option(form.ListValue, 'serial_method', _('连接方法'),
 			_('选择连接方法'));

@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, broadcast};
 use tokio::time::sleep;
 
-use crate::at::connection::{ATConnection, NetworkATConn, SerialATConn, TomModemATConn};
+use crate::at::connection::{
+    ATConnection, NetworkATConn, SerialATConn, TomModemATConn, UbusATConn,
+};
 use crate::config::Config;
 
 /// 单条 AT 命令的最长等待时间。
@@ -95,6 +97,7 @@ async fn drain_stale_data(conn: &mut Box<dyn ATConnection>) {
     }
 }
 
+#[derive(Clone)]
 pub struct ATClient {
     pub config: Arc<Config>,
     pub conn: Arc<Mutex<Box<dyn ATConnection>>>,
@@ -107,6 +110,9 @@ impl ATClient {
 
         let conn: Box<dyn ATConnection> = if at_config.conn_type == "NETWORK" {
             Box::new(NetworkATConn::new(config.clone()))
+        } else if at_config.conn_type == "UBUS" {
+            // 走 QModem 的 at-daemon ubus 服务，与 QModem 共享串口。
+            Box::new(UbusATConn::new(config.clone()))
         } else if at_config.serial.method == "TOM_MODEM" {
             Box::new(TomModemATConn::new(config.clone()))
         } else {

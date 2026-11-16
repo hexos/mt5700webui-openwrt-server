@@ -1,0 +1,160 @@
+# mt5700webui × QModem ubus 适配说明
+
+本仓库的 Rust 服务端（`atserver`）新增了 `UBUS` 连接类型，通过 QModem 的
+`at-daemon` ubus 服务与模组通信，从而**与 QModem 共享同一个串口**，不再独占。
+
+## 1. 为什么需要适配
+
+原版有三种连接方式：
+
+| 方式 | 说明 | 与 QModem 共存 |
+|------|------|----------------|
+| `NETWORK` | 直连模组网络 AT（192.168.8.1:20249） | 取决于模组是否同时开放网络 AT |
+| `SERIAL` | 自己 `open()` 串口独占读写 | ❌ 与 QModem 抢串口缓冲 |
+| `TOM_MODEM` + `-u` | 调用 `tom_modem ... -u`，由它转给 at-daemon（XGPV3 原厂方案） | ✅（本次已修复参数） |
+| `UBUS`（新增） | atserver 直接 `ubus call at-daemon sendat`，不依赖 tom_modem | ✅（本次新增） |
+
+QModem 从 ubus 暴露了 `at-daemon` 对象：串口由它**唯一持有**，所有 AT I/O 经它
+排队转发；短信/来电等 URC 通过 `qmodem.at.line` / `qmodem.at.urc` 事件广播。
+因此正确做法是让 mt5700webui 也走这条 ubus 通道。
+
+## 2. 适配后的架构
+
+```
+Web 前端 (www/5700)  ──WebSocket──>  atserver (Rust)
+                                        │
+                    ┌───────────────────┴────────────────────┐
+                    │  AT 命令（ubus call）                    │  URC（ubus listen）
+                    ▼                                        ▼
+              at-daemon.sendat                     qmodem.at.line / qmodem.at.urc
+                    │                                        │
+                    └───────────────────┬────────────────────┘
+                                        ▼
+                          串口 /dev/ttyUSBx（QModem 持有）
+```
+
+- **命令下行**：`UbusATConn::send()` 调用
+  `ubus -S call at-daemon sendat '{"at_port":...,"at_cmd":...,"timeout":...,"owner":...}'`，
+  一次调用拿到完整响应，复用 `ATClient` 原有的结束符判定 / 回显清洗逻辑。
+- **URC 上行**：`ubus::monitor_events()` 运行
+  `ubus -S listen qmodem.at.line qmodem.at.urc`，解析事件 JSON，
+  只取 `correlation == "idle"` 的行，经 `is_urc_line()` 过滤后写入 `urc_tx`，
+  最终由 WebSocket 以 `{"type":"raw_data","data":...}` 推给前端，
+  同时驱动通知日志（短信 / 来电）。
+- **事件去重**：同一行可能同时出现在两个事件里，按 `(restart_epoch, sequence)` 去重。
+- **租约处理**：atserver 作为观察者**不抢占租约**（不调用 `lease_acquire`）；
+  当 QModem 初始化期间持有租约时，`sendat` 返回 `settings_pending`，
+  atserver 短暂重试（最多约 2 秒）而不是失败。
+
+## 3. 涉及的代码改动
+
+| 文件 | 改动 |
+|------|------|
+| `at-webserver/srcs/src/ubus.rs`（新增） | ubus CLI 调用封装、事件监听、URC 分发与去重 |
+| `at-webserver/srcs/src/at/connection.rs` | 新增 `UbusATConn`（实现 `ATConnection`） |
+| `at-webserver/srcs/src/at/client.rs` | `ATClient::new()` 增加 `UBUS` 分支；补 `#[derive(Clone)]` |
+| `at-webserver/srcs/src/main.rs` | 注册 `ubus` 模块；UBUS 模式改用事件总线取 URC；配置摘要 |
+| `at-webserver/Makefile` | 增加 `+ubus` 依赖；版本 1.1.0 |
+| `at-webserver/files/etc/config/at-webserver` | 说明 UBUS 模式复用的串口参数 |
+| `luci-app-at-webserver/.../view/at-webserver/config.js` | 连接类型增加 `UBUS` 选项 |
+
+## 4. 部署步骤
+
+### 4.1 安装依赖
+
+在 ImmortalWrt/OpenWrt 上需要同时具备：
+
+1. **QModem 的 `at-daemon`**：提供 ubus 对象 `at-daemon`（`ubus-at-daemon` 包）。
+2. **`ubus` 命令行工具**（`ubus` 包，`/bin/ubus`）。
+3. 本仓库的 `at-webserver` 与 `luci-app-at-webserver`。
+
+### 4.2 让 QModem 走 ubus 并共享串口
+
+关键：QModem 侧必须启用 `use_ubus`，否则 at-daemon 启动后会独占串口缓冲：
+```sh
+uci set qmodem.<modem_section>.use_ubus='1'
+uci commit qmodem
+/etc/init.d/qmodem_init restart   # 或重启相关服务
+```
+
+确保 at-daemon 正在运行并已 open 对应串口：
+```sh
+ubus list at-daemon -v
+ubus call at-daemon list
+```
+
+### 4.3 配置 at-webserver
+
+编辑 `/etc/config/at-webserver`：
+```sh
+config at-webserver 'config'
+    option enabled '1'
+    option connection_type 'UBUS'
+    option serial_port '/dev/ttyUSB2'      # 与 QModem 的 AT 串口一致
+    option serial_baudrate '115200'
+    option serial_timeout '10'             # sendat 超时（秒）
+    # ... WebSocket / 通知等其它配置保持不变
+```
+
+或在 LuCI：`服务 → AT WebServer → 连接类型` 选择 **QModem UBUS (at-daemon)**，
+并确认串口设备与 QModem 一致。
+
+```sh
+/etc/init.d/at-webserver restart
+```
+
+### 4.4 验证
+
+```sh
+# 1. 服务端日志应出现
+#    "[UBUS] 已连接 at-daemon 串口: /dev/ttyUSB2 @ 115200 bps"
+#    "[UBUS] 启动事件监听 (qmodem.at.line / qmodem.at.urc)"
+logread -f | grep -i ubus
+
+# 2. 手动发一条 AT 验证 ubus 通道
+ubus call at-daemon sendat '{"at_port":"/dev/ttyUSB2","at_cmd":"AT+CSQ"}'
+
+# 3. 打开 WebUI（http://<路由>/5700/），AT 终端可正常收发即成功
+```
+
+## 5. 注意事项
+
+- **串口唯一**：UBUS 模式下 atserver 不再自己 open 串口，务必保证 at-daemon 已 open
+  同一 `at_port`；两个 at_port 不一致会导致命令超时。
+- **初始化窗口**：QModem 若持有租约（ttl 默认 300s）初始化模组，此期间 atserver 的
+  命令会短暂返回 `settings_pending` 并自动重试；初始化完成后恢复。
+- **防火墙 / WebSocket**：UBUS 只改变 AT 命令的获取方式，WebSocket 端口、认证、
+  通知配置等保持不变。
+- **回退**：如需恢复直连，把 `connection_type` 改回 `NETWORK` 或 `SERIAL` 并重启服务即可。
+
+## 6. 关于 `-u` 参数（TOM_MODEM 模式）
+
+XGPV3 原厂方案走的是 `TOM_MODEM`，而不是本仓库新增的 `UBUS` 连接类型。
+两者最终都用 at-daemon 共享串口，但入口不同：
+
+| 模式 | atserver 侧配置 | 实际调用 |
+|------|----------------|---------|
+| `UBUS`（新增） | `connection_type='UBUS'` | `ubus call at-daemon sendat ...`（atserver 直接发） |
+| `TOM_MODEM`（原厂） | `connection_type='SERIAL'`, `serial_method='TOM_MODEM'`, `serial_feature='UBUS'` | `tom_modem <port> -c <cmd> -u`（tom_modem 内部转给 at-daemon） |
+
+原代码把 `serial_feature='UBUS'` 直接拼成 `-UBUS`，但 QModem 的 `tom_modem`
+只接受 **`-u` / `--use_ubus`**（见 `application/tom_modem/src/utils.c` 的 usage
+与 `main.c` 的 `case USE_UBUS`；短参数定义为 `USE_UBUS_S 'u'`）。`-UBUS` 会被
+解析为短参数 `-U` 而报无效。
+
+**本次修复**（`at-webserver/srcs/src/at/connection.rs` 的
+`TomModemATConn::feature_flag()`）：`UBUS` → `-u`，其余取值保持兼容。
+`-u` 需要 `tom_modem` 编译时带 `ENABLE_UBUS_DAEMON`（XGPV3 的
+`CONFIG_PACKAGE_tom_modem_ENABLE_UBUS_DAEMON=y` 已满足）。
+
+## 7. XGPV3（西瓜皮V3）集成
+
+XGPV3 的固件**不是**由 `immortalwrt/immortalwrt` 主线直接产出的，而是由
+`zzzz0317/immortalwrt-xgp-auto-build` 构建仓库把主线（openwrt-25.12）、
+QModem feed 和自有配置拼起来编译的。该构建仓库曾集成 mt5700webui，
+但于 2026-07-19 移除。针对 XGPV3 的"适配补全"改动集（可直接套用的补丁、
+操作说明、验证清单）见随附的 `xgp-v3-integration/` 目录。
+
+要点：XGPV3 的 `xgp.config` 已打开适配所需的全部组件
+（`ubus-at-daemon`、`tom_modem_ENABLE_UBUS_DAEMON`、`qmodem`），
+因此只需恢复 mt5700webui 的编译项并把 `-u` 参数修复合入即可。
