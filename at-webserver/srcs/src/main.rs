@@ -79,13 +79,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(config);
 
     // 创建AT客户端
-    // let at_client = Arc::new(ATClient::new(config.clone())?);
     let at_client = Arc::new(ATClient::new(config.clone())?);
 
 
     // 创建自动重启飞行模式监控
     let auto_flight_mode = AutoAirPlaneMode::new(at_client.clone());
-    if auto_flight_mode.is_enbale() {
+    if auto_flight_mode.is_enabled() {
         auto_flight_mode.monitor_loop().await;
     }
 
@@ -115,7 +114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 这里单独启动事件监听任务（含断线重连）；其它模式仍用下面的 receive 轮询。
     let ubus_mode = config.at_config.conn_type == "UBUS";
     if ubus_mode {
-        let owner = "at-webserver".to_string();
+        let owner = crate::ubus::OWNER.to_string();
         let at_port = config.at_config.serial.port.clone();
         let auto_detect = config.at_config.serial.auto_detect;
         let urc_tx = at_client.urc_tx.clone();

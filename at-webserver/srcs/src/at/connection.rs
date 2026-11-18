@@ -55,6 +55,52 @@ where
     }
 }
 
+// 串口 / 网络流式连接共用的 send/receive 逻辑。
+// SerialStream 与 TcpStream 都实现了 AsyncReadExt + AsyncWriteExt，泛型化后
+// 消除 SerialATConn / NetworkATConn 里逐行复制的错误处理分支。
+async fn stream_send<S>(stream: &mut Option<S>, data: &[u8]) -> Result<usize, Box<dyn Error + Send + Sync>>
+where
+    S: AsyncWriteExt + Unpin,
+{
+    if let Some(s) = stream.as_mut() {
+        match write_with_timeout(s, data).await {
+            Ok(n) => Ok(n),
+            Err(err) => {
+                *stream = None;
+                if should_reset_connection(&err) {
+                    return Err("Disconnected".into());
+                }
+                Err(Box::new(err))
+            }
+        }
+    } else {
+        Err("Disconnected".into())
+    }
+}
+
+async fn stream_receive<S>(stream: &mut Option<S>) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>>
+where
+    S: AsyncReadExt + Unpin,
+{
+    if let Some(s) = stream.as_mut() {
+        match read_with_timeout(s, IDLE_READ_TIMEOUT).await {
+            Ok(data) => Ok(data),
+            Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                Ok(Vec::new())
+            }
+            Err(err) => {
+                *stream = None;
+                if should_reset_connection(&err) {
+                    return Err("Disconnected".into());
+                }
+                Err(Box::new(err))
+            }
+        }
+    } else {
+        Err("Disconnected".into())
+    }
+}
+
 // ========== AT 连接抽象 ==========
 
 #[async_trait]
@@ -95,40 +141,11 @@ impl ATConnection for SerialATConn {
     }
 
     async fn send(&mut self, data: &[u8]) -> Result<usize, Box<dyn Error + Send + Sync>> {
-        if let Some(stream) = &mut self.stream {
-            match write_with_timeout(stream, data).await {
-                Ok(n) => Ok(n),
-                Err(err) => {
-                    self.stream = None;
-                    if should_reset_connection(&err) {
-                        return Err("Disconnected".into());
-                    }
-                    Err(Box::new(err))
-                }
-            }
-        } else {
-            Err("Disconnected".into())
-        }
+        stream_send(&mut self.stream, data).await
     }
 
     async fn receive(&mut self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        if let Some(stream) = &mut self.stream {
-            match read_with_timeout(stream, IDLE_READ_TIMEOUT).await {
-                Ok(data) => Ok(data),
-                Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                    Ok(Vec::new())
-                }
-                Err(err) => {
-                    self.stream = None;
-                    if should_reset_connection(&err) {
-                        return Err("Disconnected".into());
-                    }
-                    Err(Box::new(err))
-                }
-            }
-        } else {
-            Err("Disconnected".into())
-        }
+        stream_receive(&mut self.stream).await
     }
 
     fn is_connected(&self) -> bool {
@@ -171,40 +188,11 @@ impl ATConnection for NetworkATConn {
     }
 
     async fn send(&mut self, data: &[u8]) -> Result<usize, Box<dyn Error + Send + Sync>> {
-        if let Some(stream) = &mut self.stream {
-            match write_with_timeout(stream, data).await {
-                Ok(n) => Ok(n),
-                Err(err) => {
-                    self.stream = None;
-                    if should_reset_connection(&err) {
-                        return Err("Disconnected".into());
-                    }
-                    Err(Box::new(err))
-                }
-            }
-        } else {
-            Err("Disconnected".into())
-        }
+        stream_send(&mut self.stream, data).await
     }
 
     async fn receive(&mut self) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-        if let Some(stream) = &mut self.stream {
-            match read_with_timeout(stream, IDLE_READ_TIMEOUT).await {
-                Ok(data) => Ok(data),
-                Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                    Ok(Vec::new())
-                }
-                Err(err) => {
-                    self.stream = None;
-                    if should_reset_connection(&err) {
-                        return Err("Disconnected".into());
-                    }
-                    Err(Box::new(err))
-                }
-            }
-        } else {
-            Err("Disconnected".into())
-        }
+        stream_receive(&mut self.stream).await
     }
 
     fn is_connected(&self) -> bool {
@@ -360,7 +348,7 @@ impl UbusATConn {
 
     /// 租约 owner 标识，用于 at-daemon 的 at_lease_authorize 鉴权。
     fn owner(&self) -> &'static str {
-        "at-webserver"
+        crate::ubus::OWNER
     }
 }
 

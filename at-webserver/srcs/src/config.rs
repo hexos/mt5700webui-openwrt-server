@@ -174,9 +174,11 @@ pub struct LoggingConfig {
 pub fn load_config_from_uci() -> Result<Config, Box<dyn Error>> {
     crate::log_info!("开始从 UCI 加载配置...");
 
-    // 先确认配置包存在且可由当前进程读取。
+    // 一次 `uci show at-webserver.config` 读取全部 option，避免每个 key fork 一次 uci。
+    // uci show 单值输出形如 `at-webserver.config.key='value'`：值由单引号包裹，
+    // 值内的单引号转义为 `'\''`。含空格/引号/反斜杠的值不会因此被截断。
     let output = Command::new("uci")
-        .args(["-q", "show", "at-webserver"])
+        .args(["-q", "show", "at-webserver.config"])
         .output()?;
 
     if !output.status.success() {
@@ -185,46 +187,10 @@ pub fn load_config_from_uci() -> Result<Config, Box<dyn Error>> {
             .map_err(|e| format!("解析默认配置失败: {}", e).into());
     }
 
-    // 不解析 `uci show` 的 shell 转义结果，直接用 `uci get` 读取每个值。
-    // 这样包含空格、引号或反斜杠的配置不会被错误截断，并且读取的是已提交配置。
-    let keys = [
-        "enabled",
-        "connection_type",
-        "network_host",
-        "network_port",
-        "network_timeout",
-        "serial_port",
-        "serial_port_custom",
-        "serial_baudrate",
-        "serial_timeout",
-        "serial_method",
-        "serial_feature",
-        "websocket_port",
-        "websocket_auth_key",
-        "wechat_webhook",
-        "log_file",
-        "notify_sms",
-        "notify_call",
-        "notify_memory_full",
-        "notify_signal",
-        "schedule_auto_airplane_enable",
-        "schedule_airplane_time",
-        "netmon_enabled",
-        "netmon_interval",
-        "log_enabled",
-        "log_level",
-    ];
     let mut uci_data = HashMap::new();
-    for key in keys {
-        let option = format!("at-webserver.config.{key}");
-        let value = Command::new("uci")
-            .args(["-q", "get", &option])
-            .output()?;
-        if value.status.success() {
-            uci_data.insert(
-                key.to_string(),
-                String::from_utf8(value.stdout)?.trim_end().to_string(),
-            );
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some((key, value)) = parse_uci_show_line(line.trim()) {
+            uci_data.insert(key, value);
         }
     }
 
@@ -409,4 +375,23 @@ pub fn load_config_from_uci() -> Result<Config, Box<dyn Error>> {
 
     crate::log_info!("✓ UCI 配置加载完成");
     Ok(config)
+}
+
+/// 解析一行 `at-webserver.config.key='value'`，返回 `(key, value)`。
+fn parse_uci_show_line(line: &str) -> Option<(String, String)> {
+    const PREFIX: &str = "at-webserver.config.";
+    let rest = line.strip_prefix(PREFIX)?;
+    let eq = rest.find('=')?;
+    let key = rest[..eq].to_string();
+    let raw = &rest[eq + 1..];
+    Some((key, unquote_uci(raw)))
+}
+
+/// 去掉 uci show 值的单引号包裹，并把 `'\''` 还原为单引号。
+fn unquote_uci(raw: &str) -> String {
+    let inner = raw
+        .strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .unwrap_or(raw);
+    inner.replace("'\\''", "'")
 }

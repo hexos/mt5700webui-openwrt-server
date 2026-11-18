@@ -24,7 +24,7 @@ impl AutoAirPlaneMode {
         Self { client }
     }
 
-    pub fn is_enbale(&self) -> bool {
+    pub fn is_enabled(&self) -> bool {
         self.client.config.auto_airplane.enabled
     }
 
@@ -71,7 +71,7 @@ impl AutoAirPlaneMode {
                 Err(e) => crate::log_error!("开启飞行模式失败: {}", e),
             }
 
-            // 等待10秒
+            // 等待 15 秒
             sleep(Duration::from_secs(15)).await;
 
             // 打开飞行模式 (CFUN=1 关闭飞行模式)
@@ -91,7 +91,7 @@ impl AutoAirPlaneMode {
     pub async fn monitor_loop(self) {
         tokio::spawn(async move {
             loop {
-                if self.is_enbale() {
+                if self.is_enabled() {
                     let now = Utc::now().with_timezone(&Shanghai);
                     crate::log_debug!("当前时间: {}", now.format("%H:%M"));
 

@@ -26,17 +26,7 @@ return view.extend({
 		} catch(e) { }
 
 		var wsPort = uci.get('at-webserver', 'config', 'websocket_port') || '8765';
-		var wsAuthKey = uci.get('at-webserver', 'config', 'websocket_auth_key') || '';
 		var wsUrl = 'ws://' + window.location.hostname + ':' + wsPort;
-		
-		// 安全处理：转义 JavaScript 字符串中的特殊字符
-		var wsAuthKeyEscaped = wsAuthKey
-			.replace(/\\/g, '\\\\')   // 反斜杠
-			.replace(/'/g, "\\'")      // 单引号
-			.replace(/"/g, '\\"')      // 双引号
-			.replace(/\n/g, '\\n')     // 换行
-			.replace(/\r/g, '\\r')     // 回车
-			.replace(/\t/g, '\\t');    // 制表符
 
 		var view = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, _('AT 命令调试')),
@@ -171,7 +161,32 @@ return view.extend({
 	var reconnectTimer = null;
 	var isManualClose = false;
 	var isAuthenticated = false;
-	var authKey = '${wsAuthKeyEscaped}';
+	var authKey = '';
+	
+	// 运行时通过 LuCI ubus rpc 读取 auth_key，避免把密钥写进页面 DOM。
+	function fetchAuthKey() {
+		var sessionid = '00000000000000000000000000000000';
+		try { sessionid = L.env.sessionid || sessionid; } catch (e) {}
+		return fetch(L.url('admin/ubus'), {
+			method: 'POST',
+			credentials: 'same-origin',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: 1,
+				method: 'call',
+				params: [ sessionid, 'uci', 'get',
+					{ config: 'at-webserver', section: 'config', option: 'websocket_auth_key' } ]
+			})
+		}).then(function(r) { return r.json(); }).then(function(msg) {
+			var result = msg && msg.result;
+			if (Array.isArray(result) && result[0] === 0) {
+				var v = result[1];
+				return (v && typeof v.value === 'string') ? v.value : '';
+			}
+			return '';
+		}).catch(function() { return ''; });
+	}
 	
 	var statusEl = document.getElementById('connection-status');
 	var outputEl = document.getElementById('at-output');
@@ -340,8 +355,11 @@ return view.extend({
 		}
 	});
 	
-	// 自动连接
-	connect();
+	// 先取 auth_key 再连接（避免密钥进入 DOM）
+	fetchAuthKey().then(function(key) {
+		authKey = key;
+		connect();
+	});
 })();
 				`)
 			);

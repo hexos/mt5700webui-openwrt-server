@@ -23,6 +23,8 @@ pub const AT_DAEMON_OBJECT: &str = "at-daemon";
 pub const EVENT_LINE: &str = "qmodem.at.line";
 /// 匹配 URC 前缀的空闲行事件名。
 pub const EVENT_URC: &str = "qmodem.at.urc";
+/// at-daemon 租约 owner 标识（main 与 UbusATConn 需保持一致）。
+pub const OWNER: &str = "at-webserver";
 
 /// 清理 at-daemon `raw_line` 字段：
 /// at-daemon 用 `blobmsg_add_field(..., line_len + 1)` 发送，末尾带一个 `\0`，

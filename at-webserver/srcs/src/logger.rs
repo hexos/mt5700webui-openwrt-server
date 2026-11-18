@@ -72,18 +72,3 @@ macro_rules! log_error {
         $crate::logger::write($crate::logger::Level::Error, format_args!($($arg)*))
     };
 }
-
-// Keep existing print-style call sites routed through the logger.
-#[macro_export]
-macro_rules! println {
-    ($($arg:tt)*) => {
-        $crate::log_info!($($arg)*)
-    };
-}
-
-#[macro_export]
-macro_rules! eprintln {
-    ($($arg:tt)*) => {
-        $crate::log_error!($($arg)*)
-    };
-}
