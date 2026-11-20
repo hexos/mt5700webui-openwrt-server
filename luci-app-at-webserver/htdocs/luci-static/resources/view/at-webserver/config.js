@@ -125,7 +125,7 @@ return view.extend({
 
 		// 串口连接配置（SERIAL 直连 与 UBUS 共享串口 复用同一 at_port）
 		o = s.option(form.ListValue, 'serial_port', _('串口设备'),
-			_('选择串口设备或手动输入路径。UBUS 模式可选「自动检测」，由 at-daemon 的端口列表决定实际 AT 串口。'));
+			_('选择串口设备或手动输入路径。切换连接类型时保留此值，避免被表单默认值覆盖'));
 		// 不挂 depends：LuCI 保存时会清掉隐藏字段。若这里依赖 connection_type，
 		// 切到 NETWORK 保存一次就会丢失串口配置，再切回 SERIAL 会错误地回退到
 		// /dev/ttyUSB0（在 XGPV3 上是诊断口，MT5700M 的 AT 口是 ttyUSB1）。
@@ -215,10 +215,11 @@ return view.extend({
 		o.depends('connection_type', 'SERIAL');
 
 		o = s.option(form.ListValue, 'serial_feature', _('UBUS特性'),
-			_('UBUS特性'));
-		o.value('UBUS', _('UBUS'));
+			_('使用 at-daemon 共享 AT 口。值 "u" 对应 tom_modem 的 -u 参数，新旧固件通用'));
+		o.value('u', _('UBUS (共享 at-daemon)'));
+		o.value('UBUS', _('UBUS (兼容旧配置)'));
 		o.value('NONE', _('无'));
-		o.default = 'UBUS';
+		o.default = 'u';
 		o.depends('serial_method', 'TOM_MODEM');
 
 		// WebSocket配置
